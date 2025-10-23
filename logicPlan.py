@@ -456,24 +456,25 @@ def positionLogicPlan(problem) -> List:
     actions = [ 'North', 'South', 'East', 'West' ]
     KB = []
     "*** BEGIN YOUR CODE HERE ***"
-    KB.append(f"PacmanAt({x0},{y0},0)")
+    KB.append(PropSymbolExpr('P', x0, y0, time=0))
 
-    # 2. 对每个时间步t，逐步扩展知识库
-    for t in range(50):
-        # 2.1 添加唯一性约束：t时刻，吃豆人只能在唯一一个非墙格子
-        KB.append(f"exactlyOne({','.join([f'PacmanAt({x},{y},{t})' for (x, y) in non_wall_coords])})")
+    KB.append(exactlyOne([PropSymbolExpr('P', x, y, time=0) for (x, y) in non_wall_coords]))
+    KB.append(exactlyOne([PropSymbolExpr(a, time=0) for a in actions]))
 
-        # 2.2 如果已能到达目标，则提取并返回动作序列
-        model = findModel(KB)
-        if model and model.get(f'PacmanAt({xg},{yg},{t})', False):
-            return extractActionSequence(model, actions)
+    for t in range(1, 51):
 
-        # 2.3 添加运动模型约束：吃豆人从t到t+1的所有可能位置和动作
+        KB.append(exactlyOne([PropSymbolExpr('P', x, y, time=t) for (x, y) in non_wall_coords]))
+        KB.append(exactlyOne([PropSymbolExpr(a, time=t) for a in actions]))
+
         for (x, y) in non_wall_coords:
-            for action in actions:
-                KB.append(positionSuccessorAxiomSingle(x, y, t, action, walls_grid))
+            axiom = pacmanSuccessorAxiomSingle(x, y, t, walls_grid)
+            if axiom is not None:
+                KB.append(axiom)
 
-    # 若无法到达目标，返回空
+        goal_clause = PropSymbolExpr('P', xg, yg, time=t)
+        model = findModel(conjoin(KB + [goal_clause]))
+        if model:
+            return extractActionSequence(model, actions)
     return []
     "*** END YOUR CODE HERE ***"
 
@@ -501,60 +502,34 @@ def foodLogicPlan(problem) -> List:
 
     "*** BEGIN YOUR CODE HERE ***"
     KB.append(PropSymbolExpr('P', x0, y0, time=0))
-    for (fx, fy) in food:
-        KB.append(PropSymbolExpr('F', fx, fy, time=0))
-    max_time = width * height * max(1, len(food))
-    for t in range(max_time + 1):
-        for (wx, wy) in walls_list:
-            KB.append(~PropSymbolExpr('P', wx, wy, time=t))
+    KB.append(exactlyOne([PropSymbolExpr('P', x, y, time=0) for (x, y) in non_wall_coords]))
+    KB.append(exactlyOne([PropSymbolExpr(a, time=0) for a in actions]))
+    for (x, y) in all_coords:
+        if (x, y) in food:
+            KB.append(PropSymbolExpr('F', x, y, time=0))
+        else:
+            KB.append(~(PropSymbolExpr('F', x, y, time=0)))
 
-    def exactlyOne(literals):
-        at_least_one = disjoin(literals)
-        at_most_one = conjoin([~a | ~b for i, a in enumerate(literals) for b in literals[i + 1:]])
-        return at_least_one & at_most_one
-
-    for t in range(1, max_time + 1):
+    for t in range(1, 51):
+        KB.append(exactlyOne([PropSymbolExpr('P', x, y, time=t) for (x, y) in non_wall_coords]))
         KB.append(exactlyOne([PropSymbolExpr(a, time=t) for a in actions]))
 
-    def positionSuccessorAxiom(x, y, t):
-        possible_causes = []
-        if (x, y) not in walls_list:
-            if (x, y - 1) in non_wall_coords:
-                possible_causes.append(PropSymbolExpr('P', x, y - 1, time=t - 1) & PropSymbolExpr('North', time=t))
-            if (x, y + 1) in non_wall_coords:
-                possible_causes.append(PropSymbolExpr('P', x, y + 1, time=t - 1) & PropSymbolExpr('South', time=t))
-            if (x - 1, y) in non_wall_coords:
-                possible_causes.append(PropSymbolExpr('P', x - 1, y, time=t - 1) & PropSymbolExpr('East', time=t))
-            if (x + 1, y) in non_wall_coords:
-                possible_causes.append(PropSymbolExpr('P', x + 1, y, time=t - 1) & PropSymbolExpr('West', time=t))
-        if possible_causes:
-            return PropSymbolExpr('P', x, y, time=t) % disjoin(possible_causes)
-        else:
-            return None
-
-    def foodSuccessorAxiom(x, y, t):
-        eaten = PropSymbolExpr('P', x, y, time=t) & ~PropSymbolExpr('F', x, y, time=t)
-        still = PropSymbolExpr('F', x, y, time=t - 1) & ~PropSymbolExpr('P', x, y, time=t)
-        return PropSymbolExpr('F', x, y, time=t) % (
-                    PropSymbolExpr('F', x, y, time=t - 1) & ~PropSymbolExpr('P', x, y, time=t))
-
-    for t in range(1, max_time + 1):
         for (x, y) in non_wall_coords:
-            axiom = positionSuccessorAxiom(x, y, t)
+            axiom = pacmanSuccessorAxiomSingle(x, y, t, walls)
             if axiom is not None:
                 KB.append(axiom)
-        for (fx, fy) in food:
-            KB.append(foodSuccessorAxiom(fx, fy, t))
-        KB_goal = KB + [~PropSymbolExpr('F', fx, fy, time=t) for (fx, fy) in food]
-        model = findModel(conjoin(KB_goal))
+
+        for (x, y) in all_coords:
+            current_F = PropSymbolExpr('F', x, y, time=t)
+            prev_F = PropSymbolExpr('F', x, y, time=t - 1)
+            prev_P = PropSymbolExpr('P', x, y, time=t - 1)
+            axiom = current_F%(prev_F&(~prev_P))
+            KB.append(axiom)
+
+        goal_clauses = [~(PropSymbolExpr('F', x, y, time=t)) for (x, y) in food]
+        model = findModel(conjoin(KB + goal_clauses))
         if model:
-            action_list = []
-            for k in range(1, t + 1):
-                for action in actions:
-                    if model.get(PropSymbolExpr(action, time=k), False):
-                        action_list.append(action)
-                        break
-            return action_list
+            return extractActionSequence(model, actions)
     return []
     "*** END YOUR CODE HERE ***"
 
@@ -574,11 +549,8 @@ def localization(problem, agent) -> Generator:
     KB = []
 
     "*** BEGIN YOUR CODE HERE ***"
-    util.raiseNotDefined()
+    "*** END YOUR CODE HERE ***"
 
-    for t in range(agent.num_timesteps):
-        "*** END YOUR CODE HERE ***"
-        yield possible_locations
 
 #______________________________________________________________________________
 # QUESTION 7
